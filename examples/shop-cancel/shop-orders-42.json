@@ -1,0 +1,693 @@
+{
+ "meta": {
+  "title": "Разбор MR !42: покупатель отменяет заказ",
+  "nav_title": "MR !42",
+  "lang": "kotlin",
+  "mr": {
+   "url": "https://gitlab.example.com/shop/orders/-/merge_requests/42",
+   "ref": "shop-orders !42",
+   "branch": "`feature/cancel-order` → `main`",
+   "task": "https://tracker.example.com/browse/SHOP-17",
+   "stats": "6 файлов · 1 коммит",
+   "state": "opened",
+   "status": {
+    "draft": false,
+    "approvals": 0,
+    "approvals_required": 1,
+    "open_threads": 0,
+    "pipeline": "success",
+    "checked_at": "01.01.2026"
+   }
+  },
+  "repo": "/tmp/mr-mentor-shop",
+  "range": "origin/main...origin/feature/cancel-order"
+ },
+ "summary": "Код делает то, что просит задача: свой заказ в статусе `NEW` или `PAID` отменяется, товар возвращается на склад, отправленный заказ получает `409`. До мержа — два вопроса: отмена может перезаписать заказ, который склад успел отправить, и резерв снимается раньше, чем сохраняется статус.",
+ "context": {
+  "text": "Задача SHOP-17: покупатель сам отменяет заказ в приложении, пока заказ не отправлен. Раньше отменяла только поддержка. Возврат денег — отдельная задача, в этом MR его нет.",
+  "terms": {
+   "резерв": "Товар, который склад отложил под заказ и не продаёт другим.",
+   "статус заказа": "`NEW` — создан, `PAID` — оплачен, `SHIPPED` — отправлен, `CANCELLED` — отменён.",
+   "X-Customer-Id": "Заголовок с номером покупателя. Его ставит шлюз после проверки токена.",
+   "SHOP-17": "Номер задачи в трекере.",
+   "SKU-1": "Артикул товара в примере: код, по которому склад его различает."
+  }
+ },
+ "picture": {
+  "before": "Покупатель видит заказ, но отменить его сам не может: только через поддержку.",
+  "after": "Покупатель отменяет заказ кнопкой, пока заказ не отправлен. Товар сразу возвращается на склад.",
+  "key": "отмену решает одна строка — набор разрешённых статусов; повторная отмена безопасна."
+ },
+ "requirements": [
+  {
+   "id": "R1",
+   "text": "Покупатель отменяет свой заказ в статусе NEW или PAID: ответ 200, статус CANCELLED."
+  },
+  {
+   "id": "R2",
+   "text": "Товар отменённого заказа возвращается на склад."
+  },
+  {
+   "id": "R3",
+   "text": "Отправленный заказ отменить нельзя: 409 с кодом order-not-cancellable."
+  },
+  {
+   "id": "R4",
+   "text": "Чужой или несуществующий заказ: 404."
+  },
+  {
+   "id": "R5",
+   "text": "Повторная отмена не меняет заказ и не трогает склад."
+  },
+  {
+   "id": "R6",
+   "text": "Покупателя определяет шлюз по токену и передаёт в X-Customer-Id.",
+   "by": "config"
+  }
+ ],
+ "entry": {
+  "label": "мобильное приложение",
+  "note": "POST /orders/{id}/cancel",
+  "calls": [
+   {
+    "to": "C-ctrl"
+   }
+  ]
+ },
+ "outcomes": [
+  {
+   "id": "O-db",
+   "kind": "store",
+   "label": "orders"
+  },
+  {
+   "id": "O-stock",
+   "kind": "store",
+   "label": "склад: POST /reservations/release"
+  },
+  {
+   "id": "O-404",
+   "kind": "error",
+   "label": "404"
+  },
+  {
+   "id": "O-409",
+   "kind": "error",
+   "label": "409 order-not-cancellable"
+  },
+  {
+   "id": "O-200",
+   "kind": "result",
+   "label": "200 · заказ CANCELLED"
+  }
+ ],
+ "chunks": [
+  {
+   "id": "C-ctor",
+   "file": "src/main/kotlin/com/example/shop/order/application/web/OrderController.kt",
+   "lines": "20-23",
+   "symbol": "OrderController",
+   "change": "modified",
+   "purpose": "Контроллер получает порт отмены заказа.",
+   "anchor": "cancelOrder: CancelOrderCommand",
+   "affects": "Создание контроллера: Spring передаёт новый порт сам."
+  },
+  {
+   "id": "C-ctrl",
+   "file": "src/main/kotlin/com/example/shop/order/application/web/OrderController.kt",
+   "lines": "29-31",
+   "symbol": "OrderController.cancel",
+   "change": "new",
+   "purpose": "Вход отмены: принимает номер заказа и покупателя, отдаёт отменённый заказ или 404.",
+   "why": "Точка входа HTTP: без неё приложению не до чего достучаться.",
+   "how": [
+    "Берёт номер заказа из пути и покупателя из заголовка `X-Customer-Id`.",
+    "Зовёт порт отмены; пусто — `404`, заказ — `200`."
+   ],
+   "calls": [
+    {
+     "to": "C-facade",
+     "when": "1 · через меню `CancelOrderCommand`"
+    },
+    {
+     "to": "O-404",
+     "when": "нет заказа"
+    },
+    {
+     "to": "O-200",
+     "when": "2"
+    }
+   ],
+   "implements": [
+    "R1",
+    "R4"
+   ],
+   "anchor": "@PostMapping(\"/{id}/cancel\")",
+   "no_weak": "только переводит ответ порта в HTTP; покупателя проверяет шлюз — замечание про заголовок стоит у строки 30"
+  },
+  {
+   "id": "C-handler",
+   "file": "src/main/kotlin/com/example/shop/order/application/web/OrderController.kt",
+   "lines": "33-35",
+   "symbol": "OrderController.notCancellable",
+   "change": "new",
+   "purpose": "Отказ «нельзя отменить» превращает в `409` с кодом `order-not-cancellable`.",
+   "why": "Ядро сообщает об отказе исключением; HTTP-код знает только контроллер.",
+   "how": [
+    "Ловит `OrderNotCancellableException` и отвечает `409` с кодом и статусом заказа."
+   ],
+   "calls": [
+    {
+     "to": "O-409",
+     "when": "1"
+    }
+   ],
+   "implements": [
+    "R3"
+   ],
+   "decision": "D2",
+   "anchor": "HttpStatus.CONFLICT"
+  },
+  {
+   "id": "C-port",
+   "file": "src/main/kotlin/com/example/shop/order/core/ports/in/CancelOrderCommand.kt",
+   "lines": "6-8",
+   "symbol": "CancelOrderCommand",
+   "change": "new",
+   "purpose": "Меню ядра: что умеет домен заказов — отменить заказ покупателя.",
+   "anchor": "fun cancel"
+  },
+  {
+   "id": "C-facade",
+   "file": "src/main/kotlin/com/example/shop/order/core/services/OrderCancelFacade.kt",
+   "lines": "18-25",
+   "symbol": "OrderCancelFacade.cancel",
+   "change": "new",
+   "purpose": "Отменяет заказ покупателя по правилам статусов и возвращает товар на склад.",
+   "why": "Сердце MR: здесь решается, можно ли отменить заказ.",
+   "how": [
+    "Ищет заказ и отсекает чужой: чужого как будто нет.",
+    "Уже отменённый возвращает как есть.",
+    "Статус не из `CANCELLABLE` — бросает `OrderNotCancellableException`.",
+    "Снимает резерв на складе и сохраняет статус `CANCELLED`."
+   ],
+   "calls": [
+    {
+     "to": "O-db",
+     "when": "1"
+    },
+    {
+     "to": "O-409",
+     "when": "статус SHIPPED"
+    },
+    {
+     "to": "C-release",
+     "when": "2"
+    },
+    {
+     "to": "O-db",
+     "when": "3"
+    }
+   ],
+   "implements": [
+    "R1",
+    "R2",
+    "R3",
+    "R4",
+    "R5"
+   ],
+   "decision": "D1",
+   "anchor": "?.takeIf { it.customerId == customerId }"
+  },
+  {
+   "id": "C-const",
+   "file": "src/main/kotlin/com/example/shop/order/core/services/OrderCancelFacade.kt",
+   "lines": "27-29",
+   "symbol": "CANCELLABLE",
+   "change": "new",
+   "purpose": "Статусы, из которых заказ можно отменить: `NEW` и `PAID`.",
+   "anchor": "setOf(OrderStatus.NEW, OrderStatus.PAID)"
+  },
+  {
+   "id": "C-exc",
+   "file": "src/main/kotlin/com/example/shop/order/core/model/OrderNotCancellableException.kt",
+   "lines": "3-3",
+   "symbol": "OrderNotCancellableException",
+   "change": "new",
+   "purpose": "Записка ядра наверх: заказ в этом статусе отменить нельзя.",
+   "anchor": "can not be cancelled"
+  },
+  {
+   "id": "C-release",
+   "file": "src/main/kotlin/com/example/shop/order/infrastructure/StockAdapter.kt",
+   "lines": "14-17",
+   "symbol": "StockAdapter.release",
+   "change": "new",
+   "purpose": "Просит склад снять резерв с товаров заказа.",
+   "why": "Единственная дверь к складу: новые вызовы склада идут через этот класс.",
+   "how": [
+    "Пустой список — выходит сразу, склад не зовёт.",
+    "Иначе отправляет товары в `POST /reservations/release`."
+   ],
+   "calls": [
+    {
+     "to": "O-stock",
+     "when": "1"
+    }
+   ],
+   "implements": [
+    "R2"
+   ],
+   "anchor": "/reservations/release",
+   "no_weak": "сбой склада уходит исключением наверх; чем он грозит заказу — в замечании про порядок у фасада"
+  }
+ ],
+ "findings": [
+  {
+   "id": "F-race",
+   "severity": "ask",
+   "when": "merge",
+   "area": "data",
+   "claim": "Между чтением и сохранением заказа склад может его отправить, а отмена перезапишет `SHIPPED` на `CANCELLED`.",
+   "breaks": {
+    "on": "склад меняет статус в те же миллисекунды",
+    "effect": "отправленный заказ числится отменённым",
+    "notice": "заказ `CANCELLED` с трек-номером"
+   },
+   "do": "Сохранять с проверкой версии заказа или условным обновлением «где статус NEW или PAID» в `OrderCancelFacade.kt:24`.",
+   "at": {
+    "chunk": "C-facade",
+    "line": 24
+   }
+  },
+  {
+   "id": "F-order",
+   "severity": "ask",
+   "when": "merge",
+   "area": "data",
+   "claim": "Резерв снимается раньше, чем сохраняется статус: если сохранение упадёт, товар уйдёт в продажу, а заказ останется `PAID`.",
+   "breaks": {
+    "on": "база недоступна после ответа склада",
+    "effect": "товар продан дважды",
+    "notice": "отрицательный остаток на складе"
+   },
+   "do": "Спросить автора, почему не наоборот: сначала сохранить `CANCELLED`, потом снять резерв.",
+   "at": {
+    "chunk": "C-facade",
+    "line": 23
+   }
+  },
+  {
+   "id": "F-header",
+   "severity": "know",
+   "when": "know",
+   "area": "scope",
+   "claim": "Покупателя сервис берёт из заголовка и сам не проверяет: защита держится на шлюзе.",
+   "at": {
+    "chunk": "C-ctrl",
+    "line": 30
+   }
+  },
+  {
+   "id": "F-test409",
+   "severity": "ask",
+   "when": "merge",
+   "area": "tests",
+   "claim": "Перевод отказа в `409` с кодом не проверен тестом: тесты есть только у фасада.",
+   "do": "Добавить тест контроллера на `409` и тело `order-not-cancellable`.",
+   "at": {
+    "chunk": "C-handler"
+   },
+   "req": "R3",
+   "breaks": {
+    "on": "кто-то поменяет код или имя ошибки",
+    "effect": "приложение перестанет показывать «заказ уже отправлен»",
+    "notice": "жалобы на непонятную ошибку при отмене"
+   }
+  }
+ ],
+ "probes": [
+  {
+   "id": "P1",
+   "at": "C-ctrl",
+   "kind": "malformed",
+   "input": "номер заказа `abc` вместо UUID",
+   "code": "Spring не разберёт `@PathVariable id: UUID` и ответит `400` до вызова метода.",
+   "ok": "контроллер до такого запроса не доходит, `OrderController.kt:30`"
+  },
+  {
+   "id": "P2",
+   "at": "C-release",
+   "kind": "empty",
+   "input": "заказ без товаров",
+   "code": "`release` видит пустой список и выходит сразу.",
+   "ok": "склад не зовётся, `StockAdapter.kt:15`"
+  },
+  {
+   "id": "P3",
+   "at": "C-facade",
+   "kind": "foreign",
+   "input": "заказ другого покупателя",
+   "code": "`takeIf` даёт `null` → фасад возвращает `null` → контроллер отвечает `404`.",
+   "ok": "чужой заказ неотличим от несуществующего, `OrderCancelFacade.kt:19`"
+  },
+  {
+   "id": "P4",
+   "at": "C-facade",
+   "kind": "old",
+   "input": "заказ, созданный до MR и уже отменённый поддержкой",
+   "code": "Статус `CANCELLED` → заказ возвращается без изменений, склад не зовётся.",
+   "ok": "повторная отмена безопасна, `OrderCancelFacade.kt:20`"
+  }
+ ],
+ "decisions": [
+  {
+   "id": "D1",
+   "question": "Что ответить на повторную отмену: ошибку или тот же заказ?",
+   "decided": "Тот же заказ с `200`: отмену можно повторить после таймаута без вреда.",
+   "rejected": [
+    "`409` — клиент, повторивший запрос после таймаута, увидит ошибку, хотя заказ отменён"
+   ],
+   "source": [
+    "code"
+   ],
+   "code": {
+    "lang": "kotlin",
+    "caption": "OrderCancelFacade.kt:20",
+    "code": "if (order.status == OrderStatus.CANCELLED) return order"
+   }
+  },
+  {
+   "id": "D2",
+   "question": "Где переводить отказ в HTTP-код?",
+   "decided": "Ядро бросает `OrderNotCancellableException`, контроллер переводит его в `409`.",
+   "rejected": [
+    "фасад возвращает HTTP-статус — ядро узнало бы про HTTP"
+   ],
+   "source": [
+    "code"
+   ]
+  }
+ ],
+ "tests": [
+  {
+   "id": "T1",
+   "file": "src/test/kotlin/com/example/shop/order/core/services/OrderCancelFacadeTest.kt",
+   "scenario": "Оплаченный заказ отменяется, товар возвращается на склад",
+   "proves": [
+    "R1",
+    "R2"
+   ]
+  },
+  {
+   "id": "T2",
+   "file": "src/test/kotlin/com/example/shop/order/core/services/OrderCancelFacadeTest.kt",
+   "scenario": "Чужой заказ не найден",
+   "proves": [
+    "R4"
+   ]
+  },
+  {
+   "id": "T3",
+   "file": "src/test/kotlin/com/example/shop/order/core/services/OrderCancelFacadeTest.kt",
+   "scenario": "Отправленный заказ не отменяется",
+   "proves": [
+    "R3"
+   ]
+  },
+  {
+   "id": "T4",
+   "file": "src/test/kotlin/com/example/shop/order/core/services/OrderCancelFacadeTest.kt",
+   "scenario": "Повторная отмена не трогает склад",
+   "proves": [
+    "R5"
+   ]
+  }
+ ],
+ "plan": {
+  "task": "Покупатель сам отменяет заказ, пока его не отправили, и товар возвращается на склад.",
+  "kind": "новая ручка в существующем контроллере",
+  "rows": [
+   {
+    "need": "Принять запрос на отмену",
+    "where": "`application/web` — рядом с просмотром заказа",
+    "why": "Контроллер заказов уже есть, ручка — его соседка.",
+    "learn": "Как HTTP-запрос попадает в ядро и как отказ ядра становится кодом ответа.",
+    "chunks": [
+     "C-ctor",
+     "C-ctrl",
+     "C-handler",
+     "C-port"
+    ],
+    "check": [
+     {
+      "kind": "predict",
+      "chunk": "C-ctrl",
+      "q": "Фасад вернул `null`. Что получит приложение?",
+      "a": "`404`: `?: ResponseEntity.notFound().build()` в `OrderController.kt:31`."
+     },
+     {
+      "kind": "where",
+      "chunk": "C-handler",
+      "q": "Бизнес просит отдавать при отказе ещё и дату отправки. Где менять ответ?",
+      "a": "В `notCancellable` в `OrderController.kt` — он собирает тело ответа `409`. Дату нужно положить в исключение."
+     }
+    ]
+   },
+   {
+    "need": "Отменить заказ по правилам",
+    "where": "`core/services` — фасад реализует порт",
+    "why": "Правила статусов — бизнес-логика ядра.",
+    "learn": "Где живёт правило «что можно отменить» и как отсекается чужой заказ.",
+    "chunks": [
+     "C-facade",
+     "C-const",
+     "C-exc"
+    ],
+    "check": [
+     {
+      "kind": "explain",
+      "chunk": "C-facade",
+      "code": "val order = orders.findById(orderId)?.takeIf { it.customerId == customerId } ?: return null",
+      "q": "Что делает эта строка?",
+      "a": "Ищет заказ; если он есть, но чужой, — ведёт себя так, будто заказа нет, и выходит с `null`."
+     },
+     {
+      "kind": "break",
+      "chunk": "C-facade",
+      "q": "Убери строку 20 с проверкой `CANCELLED`. Что будет при повторной отмене?",
+      "a": "`CANCELLED` нет в `CANCELLABLE` → исключение → покупатель получит `409` на заказ, который уже отменён."
+     }
+    ]
+   },
+   {
+    "need": "Вернуть товар на склад",
+    "where": "`infrastructure` — адаптер склада",
+    "why": "Склад зовут только через адаптер.",
+    "learn": "Как сервис ходит во внешний сервис и что делает с пустым входом.",
+    "chunks": [
+     "C-release"
+    ],
+    "check": [
+     {
+      "kind": "predict",
+      "chunk": "C-release",
+      "q": "В заказе нет товаров. Сколько запросов уйдёт на склад?",
+      "a": "Ни одного: `if (items.isEmpty()) return` в `StockAdapter.kt:15`."
+     }
+    ]
+   },
+   {
+    "need": "Тесты",
+    "where": "`src/test` — тест фасада",
+    "why": "Правила проверяются на фасаде без HTTP.",
+    "learn": "Что доказывают тесты и чего не доказывают.",
+    "chunks": [],
+    "files": [
+     "src/test/kotlin/com/example/shop/order/core/services/OrderCancelFacadeTest.kt"
+    ]
+   }
+  ]
+ },
+ "trace": {
+  "title": "покупатель отменяет оплаченный заказ",
+  "steps": [
+   {
+    "at": "C-ctrl",
+    "in": "`POST /orders/<id>/cancel`, `X-Customer-Id: <номер клиента>`",
+    "does": "Берёт номер заказа и покупателя, зовёт порт отмены.",
+    "code": "cancelOrder.cancel(id, customerId)",
+    "out": "номер заказа и покупатель"
+   },
+   {
+    "at": "C-facade",
+    "in": "номер заказа и покупатель",
+    "does": "Находит заказ этого покупателя, проверяет статус, снимает резерв и сохраняет `CANCELLED`.",
+    "code": "val order = orders.findById(orderId)?.takeIf { it.customerId == customerId } ?: return null\nif (order.status !in CANCELLABLE) throw OrderNotCancellableException(order.status)\nstock.release(order.items)",
+    "out": "запрос в базу, товары складу"
+   },
+   {
+    "at": "O-db",
+    "in": "номер заказа",
+    "does": "Одна строка заказа.",
+    "query": "orders.findById(orderId)",
+    "returned": "заказ `PAID`, покупатель `<номер клиента>`, товар `SKU-1` × 2",
+    "out": "заказ"
+   },
+   {
+    "at": "C-release",
+    "in": "`SKU-1` × 2",
+    "does": "Просит склад снять резерв.",
+    "code": "stock.post().uri(\"/reservations/release\").body(items).retrieve().toBodilessEntity()",
+    "out": "склад ответил `200`"
+   },
+   {
+    "at": "O-200",
+    "in": "заказ `CANCELLED`",
+    "does": "Контроллер отдаёт заказ.",
+    "out": "`200`"
+   }
+  ],
+  "branches": [
+   {
+    "when": "заказ чужой или не найден",
+    "path": [
+     "C-ctrl",
+     "C-facade",
+     "O-404"
+    ],
+    "result": "404"
+   },
+   {
+    "when": "заказ уже отправлен",
+    "path": [
+     "C-facade",
+     "C-handler",
+     "O-409"
+    ],
+    "result": "409 order-not-cancellable"
+   }
+  ]
+ },
+ "mechanism": {
+  "text": "Отмена решается по статусу: из `NEW` и `PAID` заказ переходит в `CANCELLED`, уже отменённый возвращается как есть, остальные статусы — отказ.",
+  "example": {
+   "lang": "json",
+   "caption": "заказ в базе (заглушки)",
+   "code": "{\"id\": \"<id>\", \"customerId\": \"<номер клиента>\", \"status\": \"PAID\",\n \"items\": [{\"sku\": \"SKU-1\", \"quantity\": 2}]}"
+  },
+  "steps": [
+   {
+    "does": "Находит заказ и отсекает чужой",
+    "at": "OrderCancelFacade.kt:19",
+    "code": "orders.findById(orderId)?.takeIf { it.customerId == customerId } ?: return null",
+    "result": "заказ нашёлся, покупатель тот же",
+    "fails": "покупатель другой → `null` → `404`"
+   },
+   {
+    "does": "Пропускает повторную отмену без изменений",
+    "at": "OrderCancelFacade.kt:20",
+    "code": "if (order.status == OrderStatus.CANCELLED) return order",
+    "result": "статус `PAID` — идём дальше"
+   },
+   {
+    "does": "Проверяет, что статус разрешён",
+    "at": "OrderCancelFacade.kt:21",
+    "code": "if (order.status !in CANCELLABLE) throw OrderNotCancellableException(order.status)",
+    "result": "`PAID` есть в `CANCELLABLE`",
+    "fails": "`SHIPPED` → исключение → `409`"
+   },
+   {
+    "does": "Снимает резерв и сохраняет новый статус",
+    "at": "OrderCancelFacade.kt:23",
+    "code": "stock.release(order.items)\nreturn orders.save(order.copy(status = OrderStatus.CANCELLED))",
+    "result": "склад снял резерв `SKU-1` × 2, заказ `CANCELLED`",
+    "fails": "склад не ответил → исключение → `500`, заказ остался `PAID`"
+   }
+  ],
+  "takeaway": "правило отмены — набор `CANCELLABLE`. Чтобы разрешить отмену отправленного заказа, меняют этот набор, а не контроллер."
+ },
+ "example": [
+  {
+   "type": "p",
+   "text": "Запрос приложения и ответы:"
+  },
+  {
+   "type": "code",
+   "lang": "http",
+   "caption": "запрос",
+   "code": "POST /orders/<id>/cancel\nX-Customer-Id: <номер клиента>"
+  },
+  {
+   "type": "code",
+   "lang": "json",
+   "caption": "ответ 200",
+   "code": "{\"id\": \"<id>\", \"status\": \"CANCELLED\", \"items\": [{\"sku\": \"SKU-1\", \"quantity\": 2}]}"
+  },
+  {
+   "type": "code",
+   "lang": "json",
+   "caption": "ошибка: заказ отправлен",
+   "code": "409 Conflict\n{\"code\": \"order-not-cancellable\", \"status\": \"SHIPPED\"}"
+  }
+ ],
+ "service": {
+  "about": "Сервис заказов магазина: создаёт заказы, показывает их покупателю, теперь — отменяет.",
+  "stack": "Kotlin, Spring Boot, PostgreSQL, внешний сервис склада по HTTP.",
+  "flow": [
+   {
+    "label": "приложение"
+   },
+   {
+    "label": "контроллер заказов"
+   },
+   {
+    "label": "фасад отмены"
+   },
+   {
+    "label": "база и склад"
+   }
+  ],
+  "model": [
+   [
+    "заказ",
+    "покупка с товарами и статусом",
+    "`Order`, таблица `orders`"
+   ],
+   [
+    "резерв",
+    "товар, отложенный под заказ",
+    "сервис склада, `StockAdapter`"
+   ]
+  ]
+ },
+ "lessons": [
+  {
+   "title": "Ищи правило в одной строке",
+   "text": "Бизнес-правило часто сводится к набору значений или одному условию. Найди его, прежде чем читать остальное.",
+   "step": "C-const"
+  },
+  {
+   "title": "Слои: HTTP-код — только в контроллере",
+   "text": "Ядро сообщает об отказе исключением, а код ответа выбирает контроллер. Если HTTP-статус появился в фасаде — это нарушение слоёв.",
+   "step": "C-handler"
+  }
+ ],
+ "quiz": [
+  {
+   "q": "Почему чужой заказ даёт 404, а не 403?",
+   "a": "Так сервис не подтверждает, что заказ с таким номером существует."
+  },
+  {
+   "q": "Почему повторная отмена отвечает 200?",
+   "a": "Приложение может повторить запрос после таймаута; ошибка на уже отменённый заказ сбила бы покупателя."
+  },
+  {
+   "q": "Почему склад зовётся через StockAdapter, а не из фасада напрямую?",
+   "a": "Адаптер — единственная дверь к складу: адрес и формат запроса меняются в одном месте."
+  }
+ ],
+ "verify": [
+  "Отмени на стенде свой оплаченный заказ дважды: оба раза `200`, на складе резерв снят один раз."
+ ]
+}
